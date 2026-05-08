@@ -419,6 +419,20 @@ def cmd_group_russian(message):
             user_id=message.from_user.id,
         )
 
+        if cmd == "/выйти":
+            response = engine.leave_game(message.from_user.id)
+            apply_response(message, response)
+            return
+
+        if cmd == "/исключить":
+            response = engine.kick_player(
+                chat_id=message.chat.id,
+                user_id=message.from_user.id,
+                raw_text=message.text,
+            )
+            apply_response(message, response)
+            return
+
         send_private_host_info(message, response)
         return
 
@@ -452,6 +466,11 @@ def cmd_private_russian(message):
 
     if cmd == "/team":
         response = engine.team_message(message.from_user.id, message.text)
+        apply_response(message, response)
+        return
+
+    if cmd == "/выйти":
+        response = engine.leave_game(message.from_user.id)
         apply_response(message, response)
         return
 
