@@ -1,5 +1,6 @@
 import copy
 import random
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -112,6 +113,335 @@ class Engine:
             if team_of(lover.role or "") == "town":
                 game.last_dead_town_uid = lover_uid
 
+        def _roles_composition_text(self, game: Game) -> str:
+        if game.phase == "LOBBY":
+            count = len(game.players)
+
+            if count in BALANCES:
+                roles = BALANCES[count]
+                title = f"🎭 Роли для партии на {count} игроков:"
+            else:
+                supported = ", ".join(map(str, sorted(BALANCES.keys())))
+                return (
+                    f"🎭 Сейчас игроков: <b>{count}</b>\n"
+                    f"Для такого количества игроков баланс не задан.\n"
+                    f"Доступные составы: <b>{supported}</b>"
+                )
+        else:
+            roles = [p.role for p in game.players.values() if p.role]
+            title = "🎭 Роли в этой партии:"
+
+        counter = Counter(roles)
+
+        if not counter:
+            return "🎭 Роли пока не распределены."
+
+        group_order = {
+            "mafia": 1,
+            "yakuza": 2,
+            "neutral": 3,
+            "town": 4,
+        }
+
+        def sort_key(item):
+            role, amount = item
+            return group_order.get(team_of(role), 99), role
+
+        lines = [title]
+
+        for role, amount in sorted(counter.items(), key=sort_key):
+            lines.append(f"— {role} ×{amount}")
+
+        return "\n".join(lines)
+
+    def roles_list(self, chat_id: int) -> EngineResponse:
+        game = self.storage.load_game(chat_id)
+
+        if not game:
+            return EngineResponse(ok=False, reply="Игры нет.")
+
+        return EngineResponse(reply=self._roles_composition_text(game))
+
+    def _role_commands_text(self, role: str) -> str:
+        if role == "Шериф":
+            return (
+                "Команды:\n"
+                "/проверить N — проверить игрока\n"
+                "/убить N — выстрелить ночью\n"
+                "/участок_добавить N — добавить в участок\n"
+                "/участок_убрать N — убрать из участка\n"
+                "/участок — список участка\n"
+                "/охранять_участок — охранять участок ночью"
+            )
+
+        if role == "Сержант":
+            return (
+                "Команды:\n"
+                "Пока жив Шериф — вы связаны с ним через /team.\n"
+                "Если Шериф умрёт, вы получите его функции:\n"
+                "/проверить N\n"
+                "/убить N\n"
+                "/охранять_участок"
+            )
+
+        if role == "Доктор":
+            return (
+                "Команда:\n"
+                "/лечить N — лечить игрока ночью\n"
+                "Ограничения: одного игрока максимум 2 раза за игру и не две ночи подряд."
+            )
+
+        if role == "Куртизанка":
+            return (
+                "Команда:\n"
+                "/соблазнить N — забрать игрока к себе ночью\n"
+                "Нельзя соблазнять одного и того же игрока две ночи подряд."
+            )
+
+        if role == "Журналист":
+            return "Команда:\n/сравнить N M — сравнить двух игроков ночью"
+
+        if role == "Бомж":
+            return "Команда:\n/следить N — следить за игроком ночью"
+
+        if role == "Почтальон":
+            return (
+                "Команда:\n"
+                "/письмо N M — проверить игрока N и отправить результат игроку M\n"
+                "Одному игроку нельзя отправить письмо дважды."
+            )
+
+        if role == "Тюремщик":
+            return (
+                "Команды:\n"
+                "/посадить N M — посадить двух игроков ночью\n"
+                "/оружие N — дать оружие одному заключённому\n"
+                "/team текст — говорить с заключёнными"
+            )
+
+        if role == "Стрелок":
+            return (
+                "Команда:\n"
+                "/стрелять N — дневной выстрел\n"
+                "В первый день стрелять нельзя. Всего 3 пули."
+            )
+
+        if role == "Амур":
+            return "Команда:\n/влюбить N M — выбрать пару ночью"
+
+        if role == "Судья":
+            return (
+                "Команды:\n"
+                "/помиловать — отменить казнь\n"
+                "/казнить N — казнить кандидата"
+            )
+
+        if role == "Ветеран":
+            return "Команда:\n/защищаться — встать на защиту дома ночью"
+
+        if role == "Маньяк":
+            return "Команда:\n/зарезать N — выбрать жертву ночью"
+
+        if role == "Путана":
+            return "Команда:\n/заразить N — заразить игрока ночью"
+
+        if role == "Ведьма":
+            return "Команда:\n/контроль N M — контролировать игрока N и направить его к игроку M"
+
+        if role == "Босс Мафии":
+            return (
+                "Команды:\n"
+                "/мафия_убить N — выбрать жертву мафии\n"
+                "/team текст — чат мафии"
+            )
+
+        if role == "Киллер Мафии":
+            return (
+                "Команды:\n"
+                "/мафия_убить N — выбрать жертву мафии\n"
+                "/доп_выстрел N — дополнительный выстрел киллера\n"
+                "/team текст — чат мафии"
+            )
+
+        if role == "Подручный Мафии":
+            return (
+                "Команды:\n"
+                "/мафия_убить N — выбрать жертву мафии\n"
+                "/team текст — чат мафии"
+            )
+
+        if role == "Босс Якудзы":
+            return (
+                "Команды:\n"
+                "/якудза_убить N — выбрать жертву Якудзы\n"
+                "/team текст — чат Якудзы"
+            )
+
+        if role == "Ниндзя":
+            return (
+                "Команды:\n"
+                "/якудза_убить N — выбрать жертву Якудзы\n"
+                "/team текст — чат Якудзы\n"
+                "Для проверки Шерифа вы выглядите мирным."
+            )
+
+        if role == "Подручный Якудзы":
+            return (
+                "Команды:\n"
+                "/якудза_убить N — выбрать жертву Якудзы\n"
+                "/team текст — чат Якудзы"
+            )
+
+        return "Для вашей роли специальные команды пока не указаны."
+
+    def action_help(self, user_id: int) -> EngineResponse:
+        game = self._find_user_game(user_id)
+
+        if not game:
+            return EngineResponse(ok=False, reply="Вы сейчас не в активной игре.")
+
+        player = game.players[user_id]
+        role = self.effective_role(game, player)
+
+        return EngineResponse(
+            reply=(
+                f"🎭 Ваша роль: <b>{player.role}</b>\n"
+                f"Текущая активная роль: <b>{role}</b>\n\n"
+                f"{self._role_commands_text(role)}"
+            )
+        )
+
+        def _action_public_notice(self, game: Game, player: Player, payload: dict) -> str:
+        role = self.effective_role(game, player)
+        verb = payload.get("verb")
+
+        if role == "Шериф":
+            if verb == "inspect":
+                return "👮 Шериф вышел на проверку."
+            if verb == "kill":
+                return "👮 Шериф вышел с оружием."
+            if verb == "guard_station":
+                return "👮 Шериф отправился охранять участок."
+
+        if role == "Доктор":
+            return "🩺 Доктор выбрал пациента."
+
+        if role == "Куртизанка":
+            return "💃 Куртизанка выбрала клиента."
+
+        if role == "Журналист":
+            return "📰 Журналист начал сравнение."
+
+        if role == "Бомж":
+            return "🧥 Бомж вышел следить."
+
+        if role == "Почтальон":
+            return "📨 Почтальон отправился с письмом."
+
+        if role == "Тюремщик":
+            return "🔒 Тюремщик выбрал заключённых."
+
+        if role == "Амур":
+            return "💘 Амур выбрал пару."
+
+        if role == "Ветеран":
+            return "🛡 Ветеран встал на защиту."
+
+        if role == "Маньяк":
+            return "🩸 Маньяк выбрал жертву."
+
+        if role == "Путана":
+            return "☣️ Путана распространила заразу."
+
+        if role == "Ведьма":
+            return "🪄 Ведьма выбрала цель контроля."
+
+        if role in MAFIA_ROLES:
+            if verb == "extra":
+                return "🤵 Киллер мафии сделал дополнительный выстрел."
+
+            return "🤵 Мафия сделала выбор."
+
+        if role in YAKUZA_ROLES:
+            return "🎌 Якудза сделала выбор."
+
+        return "🌙 Один из игроков сделал ночной ход."
+
+    def _action_private_confirmation(self, game: Game, player: Player, payload: dict) -> str:
+        role = self.effective_role(game, player)
+        verb = payload.get("verb")
+        targets = payload.get("targets", [])
+
+        def label_by_seat(seat: int) -> str:
+            target = self.seat_to_player(game, seat)
+
+            if not target:
+                return f"#{seat}"
+
+            return self.player_label(target)
+
+        if role == "Шериф":
+            if verb == "inspect" and targets:
+                return f"✅ Ход принят.\nВы проверяете {label_by_seat(targets[0])}."
+
+            if verb == "kill" and targets:
+                return f"✅ Ход принят.\nВы стреляете в {label_by_seat(targets[0])}."
+
+            if verb == "guard_station":
+                return "✅ Ход принят.\nВы охраняете полицейский участок."
+
+        if role == "Доктор" and targets:
+            return f"✅ Ход принят.\nВы лечите {label_by_seat(targets[0])}."
+
+        if role == "Куртизанка" and targets:
+            return f"✅ Ход принят.\nВы соблазняете {label_by_seat(targets[0])}."
+
+        if role == "Журналист" and len(targets) == 2:
+            return f"✅ Ход принят.\nВы сравниваете {label_by_seat(targets[0])} и {label_by_seat(targets[1])}."
+
+        if role == "Бомж" and targets:
+            return f"✅ Ход принят.\nВы следите за {label_by_seat(targets[0])}."
+
+        if role == "Почтальон" and len(targets) == 2:
+            return (
+                f"✅ Ход принят.\n"
+                f"Вы проверяете {label_by_seat(targets[0])} "
+                f"и отправляете письмо {label_by_seat(targets[1])}."
+            )
+
+        if role == "Тюремщик" and len(targets) == 2:
+            return f"✅ Ход принят.\nВы сажаете {label_by_seat(targets[0])} и {label_by_seat(targets[1])}."
+
+        if role == "Амур" and len(targets) == 2:
+            return f"✅ Ход принят.\nВы создаёте пару: {label_by_seat(targets[0])} и {label_by_seat(targets[1])}."
+
+        if role == "Ветеран":
+            return "✅ Ход принят.\nВы встали на защиту дома."
+
+        if role == "Маньяк" and targets:
+            return f"✅ Ход принят.\nВы выбрали жертву: {label_by_seat(targets[0])}."
+
+        if role == "Путана" and targets:
+            return f"✅ Ход принят.\nВы заражаете {label_by_seat(targets[0])}."
+
+        if role == "Ведьма" and len(targets) == 2:
+            return (
+                f"✅ Ход принят.\n"
+                f"Вы контролируете {label_by_seat(targets[0])} "
+                f"и направляете к {label_by_seat(targets[1])}."
+            )
+
+        if role in MAFIA_ROLES and targets:
+            if verb == "extra":
+                return f"✅ Дополнительный выстрел принят.\nЦель: {label_by_seat(targets[0])}."
+
+            return f"✅ Ход мафии принят.\nЦель: {label_by_seat(targets[0])}."
+
+        if role in YAKUZA_ROLES and targets:
+            return f"✅ Ход Якудзы принят.\nЦель: {label_by_seat(targets[0])}."
+
+        return "✅ Ход принят."
+
     def _check_winner(self, game: Game) -> Optional[str]:
         alive = [p for p in game.players.values() if p.alive]
         if not alive:
@@ -149,9 +479,13 @@ class Engine:
             if p.role == "Ведьма":
                 extra.append("Магический барьер: 1")
             txt = f"🎭 Ваша роль: <b>{p.role}</b>\nМесто: <b>#{p.seat}</b>"
-            if extra:
-                txt += "\n" + "\n".join(extra)
-            dms.append((p.user_id, txt))
+
+if extra:
+    txt += "\n" + "\n".join(extra)
+
+txt += "\n\n" + self._role_commands_text(p.role or "")
+
+dms.append((p.user_id, txt))
 
         mafia = [p for p in game.players.values() if p.role in MAFIA_ROLES]
         yakuza = [p for p in game.players.values() if p.role in YAKUZA_ROLES]
@@ -241,17 +575,32 @@ class Engine:
             broadcasts=[(chat_id, f"➖ {self.player_label(player)} вышел(ла) из лобби.")]
         )
 
-    def players_list(self, chat_id: int) -> EngineResponse:
+        def players_list(self, chat_id: int) -> EngineResponse:
         game = self.storage.load_game(chat_id)
+
         if not game:
             return EngineResponse(ok=False, reply="Игры нет.")
 
         plist = sorted(game.players.values(), key=lambda x: x.seat)
+
         if not plist:
             return EngineResponse(reply="Игроков пока нет.")
 
-        txt = "👥 Игроки:\n" + "\n".join(self.player_label(p) for p in plist)
-        return EngineResponse(reply=txt)
+        lines = ["👥 Игроки:"]
+
+        for p in plist:
+            if game.phase == "LOBBY":
+                lines.append(f"{self.player_label(p)}")
+            else:
+                if p.alive:
+                    lines.append(f"{self.player_label(p)} — жив")
+                else:
+                    lines.append(f"{self.player_label(p)} — мёртв, роль: <b>{p.role}</b>")
+
+        text = "\n".join(lines)
+        text += "\n\n" + self._roles_composition_text(game)
+
+        return EngineResponse(reply=text)
 
     def close_game(self, chat_id: int, user_id: int) -> EngineResponse:
         game = self.storage.load_game(chat_id)
@@ -307,6 +656,205 @@ class Engine:
             dms=self._role_cards(game)
         )
 
+    def submit_named_action(
+        self,
+        user_id: int,
+        pseudo_text: str,
+        allowed_roles: set,
+        usage_text: str,
+    ) -> EngineResponse:
+        game = self._find_user_game(user_id)
+
+        if not game:
+            return EngineResponse(ok=False, reply="Вы не в игре.")
+
+        if game.phase != "NIGHT":
+            return EngineResponse(ok=False, reply="Ночные действия принимаются только ночью.")
+
+        player = game.players[user_id]
+
+        if not player.alive:
+            return EngineResponse(ok=False, reply="Мёртвые не ходят.")
+
+        role = self.effective_role(game, player)
+
+        if role not in allowed_roles and player.role not in allowed_roles:
+            return EngineResponse(
+                ok=False,
+                reply=(
+                    "Эта команда недоступна вашей роли.\n\n"
+                    f"Ваша роль: <b>{player.role}</b>\n\n"
+                    f"{self._role_commands_text(role)}"
+                ),
+            )
+
+        response = self.submit_action(user_id, pseudo_text)
+
+        if not response.ok:
+            response.reply += f"\n\nПравильный формат:\n{usage_text}"
+
+        return response
+
+    def _night_action_status(self, game: Game) -> Tuple[List[str], List[int]]:
+        lines: List[str] = []
+        remind_user_ids: List[int] = []
+
+        if game.phase != "NIGHT":
+            return ["Сейчас не ночь."], []
+
+        alive = [p for p in game.players.values() if p.alive]
+
+        def has_action(uid: int) -> bool:
+            return uid in game.actions
+
+        def action_mark(done: bool) -> str:
+            return "✅" if done else "❌"
+
+        lines.append(f"🌙 Ночь {game.night}. Статус ходов:")
+
+        individual_roles = {
+            "Шериф",
+            "Доктор",
+            "Куртизанка",
+            "Журналист",
+            "Бомж",
+            "Почтальон",
+            "Тюремщик",
+            "Маньяк",
+            "Путана",
+            "Ведьма",
+        }
+
+        if game.night == 1:
+            individual_roles.add("Амур")
+
+        for p in sorted(alive, key=lambda x: x.seat):
+            effective = self.effective_role(game, p)
+
+            if effective not in individual_roles:
+                continue
+
+            done = has_action(p.user_id)
+            lines.append(f"{action_mark(done)} {effective}: {self.player_label(p)}")
+
+            if not done:
+                remind_user_ids.append(p.user_id)
+
+        veterans = [
+            p for p in alive
+            if self.effective_role(game, p) == "Ветеран"
+        ]
+
+        for p in sorted(veterans, key=lambda x: x.seat):
+            done = has_action(p.user_id)
+            mark = "✅" if done else "➖"
+            lines.append(f"{mark} Ветеран: {self.player_label(p)} — ход опциональный")
+
+        mafia_alive = [
+            p for p in alive
+            if p.role in MAFIA_ROLES
+        ]
+
+        if mafia_alive:
+            mafia_done = any(
+                uid in game.actions and game.players[uid].role in MAFIA_ROLES
+                for uid in game.actions
+            )
+
+            lines.append(f"{action_mark(mafia_done)} Мафия: клановый ход")
+
+            if not mafia_done:
+                for p in mafia_alive:
+                    remind_user_ids.append(p.user_id)
+
+            killers = [
+                p for p in mafia_alive
+                if p.role == "Киллер Мафии"
+            ]
+
+            for killer in killers:
+                extra_done = (
+                    killer.user_id in game.actions
+                    and game.actions[killer.user_id].get("verb") == "extra"
+                )
+
+                mark = "✅" if extra_done else "➖"
+                lines.append(f"{mark} Киллер Мафии: {self.player_label(killer)} — доп. выстрел опциональный")
+
+        yakuza_alive = [
+            p for p in alive
+            if p.role in YAKUZA_ROLES
+        ]
+
+        if yakuza_alive:
+            yakuza_done = any(
+                uid in game.actions and game.players[uid].role in YAKUZA_ROLES
+                for uid in game.actions
+            )
+
+            lines.append(f"{action_mark(yakuza_done)} Якудза: клановый ход")
+
+            if not yakuza_done:
+                for p in yakuza_alive:
+                    remind_user_ids.append(p.user_id)
+
+        remind_user_ids = list(dict.fromkeys(remind_user_ids))
+
+        return lines, remind_user_ids
+
+    def night_actions_status(self, chat_id: int, user_id: int) -> EngineResponse:
+        game = self.storage.load_game(chat_id)
+
+        if not game:
+            return EngineResponse(ok=False, reply="Игры нет.")
+
+        if game.host_id != user_id:
+            return EngineResponse(ok=False, reply="Только ведущий может смотреть статус ходов.")
+
+        lines, _ = self._night_action_status(game)
+
+        return EngineResponse(reply="\n".join(lines))
+
+    def remind_night_actions(self, chat_id: int, user_id: int) -> EngineResponse:
+        game = self.storage.load_game(chat_id)
+
+        if not game:
+            return EngineResponse(ok=False, reply="Игры нет.")
+
+        if game.host_id != user_id:
+            return EngineResponse(ok=False, reply="Только ведущий может отправлять напоминания.")
+
+        if game.phase != "NIGHT":
+            return EngineResponse(ok=False, reply="Напоминать о ночных ходах можно только ночью.")
+
+        lines, remind_user_ids = self._night_action_status(game)
+
+        if not remind_user_ids:
+            return EngineResponse(reply="✅ Все обязательные ночные ходы уже сделаны.")
+
+        dms: List[Tuple[int, str]] = []
+
+        for uid in remind_user_ids:
+            player = game.players.get(uid)
+
+            if not player or not player.alive:
+                continue
+
+            role = self.effective_role(game, player)
+
+            dms.append((
+                uid,
+                "🌙 Напоминание от ведущего.\n"
+                "Вы ещё не сделали ночной ход.\n\n"
+                f"Ваша роль: <b>{player.role}</b>\n\n"
+                f"{self._role_commands_text(role)}"
+            ))
+
+        return EngineResponse(
+            reply=f"🔔 Напоминание отправлено: {len(dms)} игрокам.",
+            dms=dms,
+        )
+
     def status(self, chat_id: int) -> EngineResponse:
         game = self.storage.load_game(chat_id)
         if not game:
@@ -322,6 +870,7 @@ class Engine:
             f"Живые ({len(alive)}):\n" + ("\n".join(alive) if alive else "—") +
             "\n\nМёртвые:\n" + ("\n".join(dead) if dead else "—")
         )
+        txt += "\n\n" + self._roles_composition_text(game)
         return EngineResponse(reply=txt)
 
     def open_night(self, chat_id: int, user_id: int) -> EngineResponse:
@@ -866,8 +1415,21 @@ class Engine:
         except ValueError as exc:
             return EngineResponse(ok=False, reply=str(exc))
 
-        self.storage.save_game(game)
-        return EngineResponse(reply="✅ Ход принят.")
+        payload = game.actions.get(user_id, {})
+self.storage.save_game(game)
+
+confirmation = self._action_private_confirmation(game, player, payload)
+notice = self._action_public_notice(game, player, payload)
+
+broadcasts = []
+
+if notice:
+    broadcasts.append((game.chat_id, notice))
+
+return EngineResponse(
+    reply=confirmation,
+    broadcasts=broadcasts,
+)
 
     # -------------------------
     # Ночной резолвер
