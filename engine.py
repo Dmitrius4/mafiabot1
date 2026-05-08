@@ -61,6 +61,10 @@ class Engine:
     def is_crime_team(role: str) -> bool:
         return role in MAFIA_ROLES or role in YAKUZA_ROLES
 
+    @staticmethod
+    def _sheriff_sees_as_town(role: str) -> bool:
+        return role in TOWN_ROLES or role == "Ниндзя"
+
     def _reindex_seats(self, game: Game) -> None:
         players = sorted(game.players.values(), key=lambda p: p.seat)
         game.seat_to_uid.clear()
@@ -93,6 +97,13 @@ class Engine:
 
     def _find_user_game(self, user_id: int) -> Optional[Game]:
         return self.storage.find_game_by_user(user_id)
+
+    def _find_host_game(self, user_id: int) -> Optional[Game]:
+        for game in self.storage.load_all_games():
+            if game.phase != "ENDED" and game.host_id == user_id:
+                return game
+
+        return None
 
     def _kill_player(self, game: Game, uid: int, public_lines: List[str], public_prefix: str) -> None:
         player = game.players[uid]
@@ -168,10 +179,11 @@ class Engine:
                 "Команды:\n"
                 "/проверить N — проверить игрока\n"
                 "/убить N — выстрелить ночью\n"
-                "/участок_добавить N — добавить в участок\n"
-                "/участок_убрать N — убрать из участка\n"
+                "/участок_добавить N — добавить в участок проверенного мирного игрока\n"
                 "/участок — список участка\n"
-                "/охранять_участок — охранять участок ночью"
+                "/охранять_участок — охранять участок ночью\n"
+                "/team текст — чат Шерифа/Сержанта/участка\n"
+                "/участок_чат текст — чат полицейского участка"
             )
 
         if role == "Сержант":
@@ -181,7 +193,11 @@ class Engine:
                 "Если Шериф умрёт, вы получите его функции:\n"
                 "/проверить N\n"
                 "/убить N\n"
-                "/охранять_участок"
+                "/участок_добавить N\n"
+                "/участок\n"
+                "/охранять_участок\n"
+                "/team текст — чат Шерифа/Сержанта/участка\n"
+                "/участок_чат текст — чат полицейского участка"
             )
 
         if role == "Доктор":
@@ -280,9 +296,10 @@ class Engine:
         if role == "Ниндзя":
             return (
                 "Команды:\n"
-                "/якудза_убить N — выбрать жертву Якудзы\n"
+                "/убить N — клановый ход Якудзы\n"
                 "/team текст — чат Якудзы\n"
-                "Для проверки Шерифа вы выглядите мирным."
+                "Если вас добавят в полицейский участок:\n"
+                "/участок_чат текст — чат участка"
             )
 
         if role == "Подручный Якудзы":
@@ -366,6 +383,62 @@ class Engine:
             return "🎌 Якудза сделала выбор."
 
         return "🌙 Один из игроков сделал ночной ход."
+
+    def police_station_message(self, user_id: int, raw_text: str) -> EngineResponse:
+        game = self._find_user_game(user_id)
+
+        if not game:
+            return EngineResponse(ok=False, reply="Вы не в игре.")
+
+        sender = game.players.get(user_id)
+
+        if not sender or not sender.alive:
+            return EngineResponse(ok=False, reply="Вы не можете писать в участок.")
+
+        is_member = (
+            sender.role in {"Шериф", "Сержант"}
+            or user_id in game.police_station_uids
+        )
+
+        if not is_member:
+            return EngineResponse(
+                ok=False,
+                reply="Вы не состоите в полицейском участке."
+            )
+
+        parts = raw_text.split(maxsplit=1)
+
+        if len(parts) < 2 or not parts[1].strip():
+            return EngineResponse(
+                ok=False,
+                reply="Использование: /участок_чат текст"
+            )
+
+        text = parts[1].strip()
+
+        recipients = [
+            p for p in self._police_chat_members(game)
+            if p.user_id != user_id
+        ]
+
+        if not recipients:
+            return EngineResponse(
+                ok=False,
+                reply="В участке пока не с кем общаться."
+            )
+
+        dms: List[Tuple[int, str]] = []
+
+        for rec in recipients:
+            dms.append((
+                rec.user_id,
+                f"👮 [Участок] {self.player_label(sender)}: {text}"
+            ))
+
+        return EngineResponse(
+            reply="Сообщение в участок отправлено.",
+            dms=dms,
+        )
 
     def _action_private_confirmation(self, game: Game, player: Player, payload: dict) -> str:
         role = self.effective_role(game, player)
@@ -665,6 +738,8 @@ class Engine:
         game.last_dead_town_uid = None
         game.judge_candidates.clear()
         game.judge_decider_uid = None
+        game.police_verified_town_uids.clear()
+        game.police_station_uids.clear()
         self._start_night(game)
         self.storage.save_game(game)
 
@@ -832,6 +907,62 @@ class Engine:
 
         return EngineResponse(reply="\n".join(lines))
 
+    def host_night_actions_status(self, user_id: int) -> EngineResponse:
+        game = self._find_host_game(user_id)
+
+        if not game:
+            return EngineResponse(
+                ok=False,
+                reply="Вы сейчас не ведёте активную игру."
+            )
+
+        lines, _ = self._night_action_status(game)
+
+        return EngineResponse(reply="\n".join(lines))
+
+    def host_remind_night_actions(self, user_id: int) -> EngineResponse:
+        game = self._find_host_game(user_id)
+
+        if not game:
+            return EngineResponse(
+                ok=False,
+                reply="Вы сейчас не ведёте активную игру."
+            )
+
+        if game.phase != "NIGHT":
+            return EngineResponse(
+                ok=False,
+                reply="Напоминать о ночных ходах можно только ночью."
+            )
+
+        lines, remind_user_ids = self._night_action_status(game)
+
+        if not remind_user_ids:
+            return EngineResponse(reply="✅ Все обязательные ночные ходы уже сделаны.")
+
+        dms: List[Tuple[int, str]] = []
+
+        for uid in remind_user_ids:
+            player = game.players.get(uid)
+
+            if not player or not player.alive:
+                continue
+
+            role = self.effective_role(game, player)
+
+            dms.append((
+                uid,
+                "🌙 Напоминание от ведущего.\n"
+                "Вы ещё не сделали ночной ход.\n\n"
+                f"Ваша роль: <b>{player.role}</b>\n\n"
+                f"{self._role_commands_text(role)}"
+            ))
+
+        return EngineResponse(
+            reply=f"🔔 Напоминание отправлено: {len(dms)} игрокам.",
+            dms=dms,
+        )
+
     def remind_night_actions(self, chat_id: int, user_id: int) -> EngineResponse:
         game = self.storage.load_game(chat_id)
 
@@ -986,6 +1117,110 @@ class Engine:
             broadcasts=[(chat_id, "\n".join(lines))],
             dms=dms
         )
+    def police_station_add(self, user_id: int, raw_text: str) -> EngineResponse:
+        game = self._find_user_game(user_id)
+
+        if not game:
+            return EngineResponse(ok=False, reply="Вы не в игре.")
+
+        player = game.players.get(user_id)
+
+        if not player or not player.alive:
+            return EngineResponse(ok=False, reply="Вы не можете использовать участок.")
+
+        role = self.effective_role(game, player)
+
+        if role != "Шериф":
+            return EngineResponse(ok=False, reply="Команда доступна только Шерифу.")
+
+        parts = raw_text.split()
+
+        if len(parts) != 2 or not parts[1].isdigit():
+            return EngineResponse(ok=False, reply="Использование: /участок_добавить N")
+
+        target = self.seat_to_player(game, int(parts[1]))
+
+        if not target or not target.alive:
+            return EngineResponse(ok=False, reply="Такого живого игрока нет.")
+
+        if target.user_id == player.user_id:
+            return EngineResponse(ok=False, reply="Себя добавлять в участок не нужно.")
+
+        if target.user_id not in game.police_verified_town_uids:
+            return EngineResponse(
+                ok=False,
+                reply=(
+                    "Нельзя добавить этого игрока в участок.\n"
+                    "Сначала Шериф должен проверить его и получить мирный результат."
+                )
+            )
+
+        if target.user_id in game.police_station_uids:
+            return EngineResponse(
+                ok=False,
+                reply=f"{self.player_label(target)} уже находится в полицейском участке."
+            )
+
+        game.police_station_uids.append(target.user_id)
+        self.storage.save_game(game)
+
+        dms: List[Tuple[int, str]] = []
+
+        for member in self._police_chat_members(game):
+            if member.user_id == player.user_id:
+                continue
+
+            if member.user_id == target.user_id:
+                dms.append((
+                    member.user_id,
+                    "👮 Вас добавили в полицейский участок.\n"
+                    "Теперь вы можете писать в чат участка через:\n"
+                    "/участок_чат ваш текст"
+                ))
+            else:
+                dms.append((
+                    member.user_id,
+                    f"👮 {self.player_label(target)} добавлен(а) в полицейский участок."
+                ))
+
+        return EngineResponse(
+            reply=f"👮 {self.player_label(target)} добавлен(а) в полицейский участок.",
+            dms=dms,
+        )
+
+    def police_station_list(self, user_id: int) -> EngineResponse:
+        game = self._find_user_game(user_id)
+
+        if not game:
+            return EngineResponse(ok=False, reply="Вы не в игре.")
+
+        player = game.players.get(user_id)
+
+        if not player or not player.alive:
+            return EngineResponse(ok=False, reply="Вы не можете смотреть участок.")
+
+        role = self.effective_role(game, player)
+
+        if role != "Шериф":
+            return EngineResponse(ok=False, reply="Команда доступна только Шерифу.")
+
+        members = []
+
+        for uid in game.police_station_uids:
+            p = game.players.get(uid)
+
+            if p and p.alive:
+                members.append(p)
+
+        if not members:
+            return EngineResponse(reply="👮 Полицейский участок пуст.")
+
+        lines = ["👮 Полицейский участок:"]
+
+        for p in sorted(members, key=lambda x: x.seat):
+            lines.append(f"— {self.player_label(p)}")
+
+        return EngineResponse(reply="\n".join(lines))
 
     def my_role(self, user_id: int) -> EngineResponse:
         game = self._find_user_game(user_id)
@@ -1238,26 +1473,70 @@ class Engine:
             return EngineResponse(reply="Сообщение отправлено.", dms=dms)
 
         recipients: List[Player] = []
+        chat_prefix = "💬"
 
         if sender.role in MAFIA_ROLES:
-            recipients = [p for p in game.players.values() if p.alive and p.role in MAFIA_ROLES and p.user_id != user_id]
+            recipients = [
+                p for p in game.players.values()
+                if p.alive and p.role in MAFIA_ROLES and p.user_id != user_id
+            ]
+            chat_prefix = "🕴 [Мафия]"
+
         elif sender.role in YAKUZA_ROLES:
-            recipients = [p for p in game.players.values() if p.alive and p.role in YAKUZA_ROLES and p.user_id != user_id]
+            recipients = [
+                p for p in game.players.values()
+                if p.alive and p.role in YAKUZA_ROLES and p.user_id != user_id
+            ]
+            chat_prefix = "🐉 [Якудза]"
+
         elif sender.role in {"Шериф", "Сержант"}:
-            recipients = [p for p in game.players.values() if p.alive and p.role in {"Шериф", "Сержант"} and p.user_id != user_id]
+            recipients = [
+                p for p in self._police_chat_members(game)
+                if p.user_id != user_id
+            ]
+            chat_prefix = "👮 [Участок]"
+
         elif user_id in game.lovers:
             lover_uid = game.lovers[user_id]
             lover = game.players.get(lover_uid)
+
             if lover and lover.alive:
                 recipients = [lover]
+                chat_prefix = "💘 [Влюблённые]"
 
         if not recipients:
             return EngineResponse(ok=False, reply="Сейчас у вас нет доступного командного чата.")
 
+        is_police_chat = (
+                sender.role in {"Шериф", "Сержант"}
+                or user_id in game.police_station_uids
+        )
+
         for rec in recipients:
-            dms.append((rec.user_id, f"💬 {self.player_label(sender)}: {text}"))
+            dms.append((
+                rec.user_id,
+                f"{chat_prefix} {self.player_label(sender)}: {text}"
+            ))
 
         return EngineResponse(reply="Сообщение отправлено.", dms=dms)
+
+    def _police_chat_members(self, game: Game) -> List[Player]:
+        members: Dict[int, Player] = {}
+
+        for p in game.players.values():
+            if not p.alive:
+                continue
+
+            if p.role in {"Шериф", "Сержант"}:
+                members[p.user_id] = p
+
+        for uid in game.police_station_uids:
+            p = game.players.get(uid)
+
+            if p and p.alive:
+                members[p.user_id] = p
+
+        return sorted(members.values(), key=lambda x: x.seat)
 
     # -------------------------
     # Ночные ходы
@@ -1501,86 +1780,209 @@ class Engine:
 
     def _resolve_night(self, game: Game) -> Tuple[List[str], List[Tuple[int, str]]]:
         actions = copy.deepcopy(game.actions)
+
         dms: List[Tuple[int, str]] = []
         public_lines: List[str] = []
 
         blocked: Set[int] = set()
         protected: Set[int] = set()
         healed_targets: Set[int] = set()
+        successful_heals: Set[int] = set()
+
         attacked_map: Dict[int, List[str]] = {}
         attacks: List[Tuple[str, int]] = []
+
         bum_watchers: List[Tuple[int, int]] = []
         visits: List[Tuple[int, int]] = []
+
         direct_infected: Set[int] = set()
         bum_saw_killer = False
+
         alerted_veterans: Set[int] = set()
         jailed: Set[int] = set()
 
+        # Куртизанка:
+        # client_uid -> courtesan_uid
+        courtesan_client_to_courtesan: Dict[int, int] = {}
+
+        # courtesan_uid -> client_uid
+        courtesan_to_client: Dict[int, int] = {}
+
+        not_home_notices: Set[Tuple[int, int]] = set()
+
         def valid_target(seat: int) -> Optional[Player]:
             p = self.seat_to_player(game, seat)
+
             if not p or not p.alive:
                 return None
+
             return p
 
         def can_act(actor: Player) -> bool:
-            return actor.alive and actor.user_id not in blocked and actor.user_id not in jailed
+            return (
+                    actor.alive
+                    and actor.user_id not in blocked
+                    and actor.user_id not in jailed
+            )
 
         def add_visit(actor_uid: int, target_uid: int) -> None:
             if actor_uid != target_uid:
                 visits.append((actor_uid, target_uid))
 
+        def target_is_not_home_for_actor(actor_uid: int, target_uid: int) -> bool:
+            """
+            Если цель ночью у Куртизанки, то дома её нет.
+            Куртизанка сама знает, куда забрала клиента, поэтому для неё это не считается.
+            """
+            courtesan_uid = courtesan_client_to_courtesan.get(target_uid)
+
+            if not courtesan_uid:
+                return False
+
+            return actor_uid != courtesan_uid
+
+        def notify_not_home(actor_uid: int, target: Player) -> None:
+            key = (actor_uid, target.user_id)
+
+            if key in not_home_notices:
+                return
+
+            not_home_notices.add(key)
+            dms.append((
+                actor_uid,
+                f"🏠 {self.player_label(target)} нет дома."
+            ))
+
+        def pick_available_clan_action(
+                role_priority: List[str],
+                role_set: Set[str],
+        ) -> Optional[Tuple[int, int, str]]:
+            """
+            Выбирает клановый ход мафии/якудзы.
+            Важно:
+            - заблокированный Куртизанкой мафиози не может сделать клановый ход;
+            - если цель у Куртизанки, её нет дома;
+            - если один член клана заблокирован, можно взять ход другого члена клана.
+            """
+            candidates = [
+                p for p in game.players.values()
+                if p.alive and p.role in role_set
+            ]
+
+            candidates = sorted(
+                candidates,
+                key=lambda p: (role_priority.index(p.role), p.seat)
+            )
+
+            for actor in candidates:
+                if not can_act(actor):
+                    continue
+
+                act = actions.get(actor.user_id)
+
+                if not act or act.get("verb") != "kill":
+                    continue
+
+                target = self.seat_to_player(game, act["targets"][0])
+
+                if not target or not target.alive:
+                    continue
+
+                if target.role in role_set:
+                    continue
+
+                if target_is_not_home_for_actor(actor.user_id, target.user_id):
+                    notify_not_home(actor.user_id, target)
+                    continue
+
+                return actor.user_id, target.user_id, self.player_label(actor)
+
+            return None
+
         # 1. Амур
         if game.night == 1:
             for uid, act in actions.items():
                 actor = game.players[uid]
+
                 if not actor.alive or self.effective_role(game, actor) != "Амур":
                     continue
+
                 targets = act.get("targets", [])
+
                 if len(targets) != 2:
                     continue
+
                 p1 = valid_target(targets[0])
                 p2 = valid_target(targets[1])
+
                 if not p1 or not p2 or p1.user_id == p2.user_id:
                     continue
+
                 game.lovers[p1.user_id] = p2.user_id
                 game.lovers[p2.user_id] = p1.user_id
+
                 dms.append((p1.user_id, f"💘 Вы влюблены в {self.player_label(p2)}"))
                 dms.append((p2.user_id, f"💘 Вы влюблены в {self.player_label(p1)}"))
 
         # 2. Ветеран
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if not actor.alive or self.effective_role(game, actor) != "Ветеран":
                 continue
+
             if act.get("verb") == "alert" and actor.alerts_left > 0:
                 actor.alerts_left -= 1
                 alerted_veterans.add(actor.user_id)
                 protected.add(actor.user_id)
-                dms.append((actor.user_id, f"🛡 Вы встали на защиту. Осталось защит: {actor.alerts_left}"))
+
+                dms.append((
+                    actor.user_id,
+                    f"🛡 Вы встали на защиту. Осталось защит: {actor.alerts_left}"
+                ))
 
         # 3. Ведьма
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if not actor.alive or actor.role != "Ведьма":
                 continue
+
             if act.get("verb") != "control":
                 continue
 
             controlled_player = valid_target(act["targets"][0])
             forced_target = valid_target(act["targets"][1])
+
             if not controlled_player or not forced_target:
                 continue
 
             controlled_role = self.effective_role(game, controlled_player)
-            dms.append((actor.user_id, f"🪄 Вы узнали роль цели: <b>{controlled_player.role}</b>"))
-            dms.append((controlled_player.user_id, "🪄 Этой ночью вами управляла Ведьма."))
 
-            default_action = self._default_controlled_action(controlled_role, forced_target.seat)
+            dms.append((
+                actor.user_id,
+                f"🪄 Вы узнали роль цели: <b>{controlled_player.role}</b>"
+            ))
+
+            dms.append((
+                controlled_player.user_id,
+                "🪄 Этой ночью вами управляла Ведьма."
+            ))
+
+            default_action = self._default_controlled_action(
+                controlled_role,
+                forced_target.seat
+            )
+
             if not default_action:
-                dms.append((actor.user_id, "🪄 Эту роль в MVP нельзя полноценно контролировать."))
+                dms.append((
+                    actor.user_id,
+                    "🪄 Эту роль в MVP нельзя полноценно контролировать."
+                ))
                 continue
 
             current = actions.get(controlled_player.user_id)
+
             if current and current.get("targets"):
                 current["targets"][0] = forced_target.seat
                 actions[controlled_player.user_id] = current
@@ -1590,250 +1992,489 @@ class Engine:
         # 4. Тюремщик
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if not actor.alive or actor.role != "Тюремщик":
                 continue
+
             if act.get("verb") != "jail":
                 continue
+
             targets = act.get("targets", [])
+
             if len(targets) != 2:
                 continue
+
             p1 = valid_target(targets[0])
             p2 = valid_target(targets[1])
+
             if not p1 or not p2 or p1.user_id == p2.user_id:
                 continue
 
             jailed.add(p1.user_id)
             jailed.add(p2.user_id)
+
             blocked.add(p1.user_id)
             blocked.add(p2.user_id)
+
             protected.add(p1.user_id)
             protected.add(p2.user_id)
+
             game.current_jail = [p1.user_id, p2.user_id]
             game.jailer_uid = actor.user_id
 
-            dms.append((actor.user_id, f"🔒 В тюрьму помещены {self.player_label(p1)} и {self.player_label(p2)}"))
-            dms.append((p1.user_id, f"🔒 Вы в тюрьме вместе с {self.player_label(p2)}"))
-            dms.append((p2.user_id, f"🔒 Вы в тюрьме вместе с {self.player_label(p1)}"))
+            dms.append((
+                actor.user_id,
+                f"🔒 В тюрьму помещены {self.player_label(p1)} и {self.player_label(p2)}"
+            ))
+
+            dms.append((
+                p1.user_id,
+                f"🔒 Вы в тюрьме вместе с {self.player_label(p2)}"
+            ))
+
+            dms.append((
+                p2.user_id,
+                f"🔒 Вы в тюрьме вместе с {self.player_label(p1)}"
+            ))
 
             same_mafia = p1.role in MAFIA_ROLES and p2.role in MAFIA_ROLES
             same_yakuza = p1.role in YAKUZA_ROLES and p2.role in YAKUZA_ROLES
+
             if same_mafia or same_yakuza:
                 attacks.append(("Побег из тюрьмы", actor.user_id))
 
         # 5. Куртизанка
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if self.effective_role(game, actor) != "Куртизанка" or not actor.alive:
                 continue
+
             if not can_act(actor):
                 continue
+
             if act.get("verb") != "visit":
                 continue
 
             target = valid_target(act["targets"][0])
+
             if not target or target.user_id == actor.user_id:
                 continue
-            if actor.last_courtesan_target == target.user_id:
-                dms.append((actor.user_id, "❌ Нельзя соблазнять одного и того же игрока две ночи подряд."))
+
+            if target.user_id in jailed:
+                dms.append((
+                    actor.user_id,
+                    f"🔒 {self.player_label(target)} сейчас недоступен."
+                ))
                 continue
 
+            if actor.last_courtesan_target == target.user_id:
+                dms.append((
+                    actor.user_id,
+                    "❌ Нельзя соблазнять одного и того же игрока две ночи подряд."
+                ))
+                continue
+
+            # Клиент уходит к Куртизанке.
+            courtesan_client_to_courtesan[target.user_id] = actor.user_id
+            courtesan_to_client[actor.user_id] = target.user_id
+
+            # Клиент не действует этой ночью.
             blocked.add(target.user_id)
-            protected.add(target.user_id)
+
+            # Если клиент был Ветераном на защите, он ушёл из дома.
+            # Защита срывается, заряд уже потрачен.
+            if target.user_id in alerted_veterans:
+                alerted_veterans.discard(target.user_id)
+                protected.discard(target.user_id)
+
             actor.last_courtesan_target = target.user_id
+
+            # Это контакт Куртизанки и клиента.
             add_visit(actor.user_id, target.user_id)
-            dms.append((actor.user_id, f"🌙 Вы забрали к себе {self.player_label(target)}"))
+
+            dms.append((
+                actor.user_id,
+                f"🌙 Вы забрали к себе {self.player_label(target)}"
+            ))
+
+            dms.append((
+                target.user_id,
+                "💃 Этой ночью вы были у Куртизанки. Ваш ход заблокирован."
+            ))
 
         # 6. Почтальон
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if actor.role != "Почтальон" or not can_act(actor):
                 continue
+
             if act.get("verb") != "mail":
                 continue
+
             target = valid_target(act["targets"][0])
             recipient = valid_target(act["targets"][1])
+
             if not target or not recipient:
                 continue
+
+            if target_is_not_home_for_actor(actor.user_id, target.user_id):
+                notify_not_home(actor.user_id, target)
+                continue
+
             add_visit(actor.user_id, target.user_id)
-            dms.append((recipient.user_id, f"📨 Почтальон сообщает: роль {self.player_label(target)} — <b>{target.role}</b>"))
-            dms.append((actor.user_id, f"📨 Письмо отправлено игроку {self.player_label(recipient)}"))
+
+            dms.append((
+                recipient.user_id,
+                f"📨 Почтальон сообщает: роль {self.player_label(target)} — <b>{target.role}</b>"
+            ))
+
+            dms.append((
+                actor.user_id,
+                f"📨 Письмо отправлено игроку {self.player_label(recipient)}"
+            ))
 
         # 7. Журналист
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if self.effective_role(game, actor) != "Журналист" or not can_act(actor):
                 continue
+
             if act.get("verb") != "compare":
                 continue
+
             a = valid_target(act["targets"][0])
             b = valid_target(act["targets"][1])
+
             if not a or not b:
                 continue
-            res = "одинаковые" if journalist_group(a.role or "") == journalist_group(b.role or "") else "разные"
-            dms.append((actor.user_id, f"📰 Проверка: {self.player_label(a)} и {self.player_label(b)} — {res}"))
+
+            if target_is_not_home_for_actor(actor.user_id, a.user_id):
+                notify_not_home(actor.user_id, a)
+                continue
+
+            if target_is_not_home_for_actor(actor.user_id, b.user_id):
+                notify_not_home(actor.user_id, b)
+                continue
+
+            res = (
+                "одинаковые"
+                if journalist_group(a.role or "") == journalist_group(b.role or "")
+                else "разные"
+            )
+
+            dms.append((
+                actor.user_id,
+                f"📰 Проверка: {self.player_label(a)} и {self.player_label(b)} — {res}"
+            ))
 
         # 8. Шериф / Сержант
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if not actor.alive or self.effective_role(game, actor) != "Шериф":
                 continue
+
             if not can_act(actor):
                 continue
+
+            verb = act.get("verb")
+
+            if verb == "guard_station":
+                game.station_guarded = True
+                dms.append((actor.user_id, "👮 Вы охраняли полицейский участок."))
+                continue
+
             target = valid_target(act["targets"][0]) if act.get("targets") else None
+
             if not target:
                 continue
-            verb = act.get("verb")
+
+            if target_is_not_home_for_actor(actor.user_id, target.user_id):
+                notify_not_home(actor.user_id, target)
+                continue
+
             add_visit(actor.user_id, target.user_id)
+
             if verb == "inspect":
-                dms.append((actor.user_id, f"👮 Проверка {self.player_label(target)}: {sheriff_view(target.role or '')}"))
+                view = sheriff_view(target.role or "")
+
+                dms.append((
+                    actor.user_id,
+                    f"👮 Проверка {self.player_label(target)}: {view}"
+                ))
+
+                if self._sheriff_sees_as_town(target.role or ""):
+                    if target.user_id not in game.police_verified_town_uids:
+                        game.police_verified_town_uids.append(target.user_id)
+
             elif verb == "kill":
-                attacks.append((f"Шериф ({self.player_label(actor)})", target.user_id))
+                attacks.append((
+                    f"Шериф ({self.player_label(actor)})",
+                    target.user_id
+                ))
 
         # 9. Доктор
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if self.effective_role(game, actor) != "Доктор" or not can_act(actor):
                 continue
+
             if act.get("verb") != "heal":
                 continue
+
             target = valid_target(act["targets"][0])
+
             if not target:
                 continue
+
+            if target_is_not_home_for_actor(actor.user_id, target.user_id):
+                notify_not_home(actor.user_id, target)
+                continue
+
             protected.add(target.user_id)
             healed_targets.add(target.user_id)
+
             add_visit(actor.user_id, target.user_id)
-            dms.append((actor.user_id, f"🩺 Вы лечили {self.player_label(target)}"))
+
+            dms.append((
+                actor.user_id,
+                f"🩺 Вы лечили {self.player_label(target)}"
+            ))
 
         # 10. Мафия
-        mafia_choice = self._pick_clan_action(
-            game,
-            actions,
+        mafia_choice = pick_available_clan_action(
             ["Босс Мафии", "Киллер Мафии", "Подручный Мафии"],
-            MAFIA_ROLES
+            MAFIA_ROLES,
         )
+
         if mafia_choice:
             actor_uid, target_uid, actor_label = mafia_choice
-            actor = game.players[actor_uid]
-            if can_act(actor):
-                add_visit(actor_uid, target_uid)
-                attacks.append((f"Мафия ({actor_label})", target_uid))
+            add_visit(actor_uid, target_uid)
+            attacks.append((f"Мафия ({actor_label})", target_uid))
 
-        # доп. выстрел киллера
+        # 11. Дополнительный выстрел Киллера Мафии
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if actor.role != "Киллер Мафии" or not can_act(actor):
                 continue
+
             if act.get("verb") != "extra":
                 continue
+
             target = valid_target(act["targets"][0])
+
             if not target or target.role in MAFIA_ROLES:
                 continue
-            add_visit(actor.user_id, target.user_id)
-            attacks.append((f"Доп. выстрел мафии ({self.player_label(actor)})", target.user_id))
 
-        # 11. Якудза
-        yakuza_choice = self._pick_clan_action(
-            game,
-            actions,
+            if target_is_not_home_for_actor(actor.user_id, target.user_id):
+                notify_not_home(actor.user_id, target)
+                continue
+
+            add_visit(actor.user_id, target.user_id)
+
+            attacks.append((
+                f"Доп. выстрел мафии ({self.player_label(actor)})",
+                target.user_id
+            ))
+
+        # 12. Якудза
+        yakuza_choice = pick_available_clan_action(
             ["Босс Якудзы", "Ниндзя", "Подручный Якудзы"],
-            YAKUZA_ROLES
+            YAKUZA_ROLES,
         )
+
         if yakuza_choice:
             actor_uid, target_uid, actor_label = yakuza_choice
-            actor = game.players[actor_uid]
-            if can_act(actor):
-                add_visit(actor_uid, target_uid)
-                attacks.append((f"Якудза ({actor_label})", target_uid))
+            add_visit(actor_uid, target_uid)
+            attacks.append((f"Якудза ({actor_label})", target_uid))
 
-        # 12. Маньяк
+        # 13. Маньяк
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if actor.role != "Маньяк" or not can_act(actor):
                 continue
+
             if act.get("verb") != "kill":
                 continue
+
             target = valid_target(act["targets"][0])
+
             if not target or target.user_id == actor.user_id:
                 continue
-            add_visit(actor.user_id, target.user_id)
-            attacks.append((f"Маньяк ({self.player_label(actor)})", target.user_id))
 
-        # 13. Путана
+            if target_is_not_home_for_actor(actor.user_id, target.user_id):
+                notify_not_home(actor.user_id, target)
+                continue
+
+            add_visit(actor.user_id, target.user_id)
+
+            attacks.append((
+                f"Маньяк ({self.player_label(actor)})",
+                target.user_id
+            ))
+
+        # 14. Путана
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if actor.role != "Путана" or not can_act(actor):
                 continue
+
             if act.get("verb") != "infect":
                 continue
+
             target = valid_target(act["targets"][0])
+
             if not target or target.user_id == actor.user_id:
                 continue
+
+            if target_is_not_home_for_actor(actor.user_id, target.user_id):
+                notify_not_home(actor.user_id, target)
+                continue
+
             add_visit(actor.user_id, target.user_id)
             direct_infected.add(target.user_id)
-            dms.append((actor.user_id, f"☣️ Вы заразили {self.player_label(target)}"))
 
-        # 14. Бомж
+            dms.append((
+                actor.user_id,
+                f"☣️ Вы заразили {self.player_label(target)}"
+            ))
+
+        # 15. Бомж
         for uid, act in actions.items():
             actor = game.players[uid]
+
             if self.effective_role(game, actor) != "Бомж" or not can_act(actor):
                 continue
+
             if act.get("verb") != "watch":
                 continue
+
             target = valid_target(act["targets"][0])
+
             if not target:
                 continue
+
+            if target_is_not_home_for_actor(actor.user_id, target.user_id):
+                notify_not_home(actor.user_id, target)
+                continue
+
             bum_watchers.append((actor.user_id, target.user_id))
 
-        # Ветеран убивает посетителей
+        # 16. Ветеран убивает посетителей
         for veteran_uid in alerted_veterans:
             veteran = game.players[veteran_uid]
+
             for visitor_uid, target_uid in visits:
                 if target_uid == veteran_uid and game.players[visitor_uid].alive:
-                    attacks.append((f"Ветеран ({self.player_label(veteran)})", visitor_uid))
+                    attacks.append((
+                        f"Ветеран ({self.player_label(veteran)})",
+                        visitor_uid
+                    ))
 
-        # Инфекция путаны
-        infected_now = {p.user_id for p in game.players.values() if p.alive and p.infected}
+        # 17. Инфекция Путаны
+        infected_now = {
+            p.user_id for p in game.players.values()
+            if p.alive and p.infected
+        }
+
         infected_now |= direct_infected
 
         for visitor_uid, target_uid in visits:
             if visitor_uid in infected_now or target_uid in infected_now:
                 if game.players[visitor_uid].role != "Путана":
                     infected_now.add(visitor_uid)
+
                 if game.players[target_uid].role != "Путана":
                     infected_now.add(target_uid)
 
         for uid in infected_now:
-            if uid in game.players and game.players[uid].alive and game.players[uid].role != "Путана":
+            if (
+                    uid in game.players
+                    and game.players[uid].alive
+                    and game.players[uid].role != "Путана"
+            ):
                 game.players[uid].infected = True
 
         for uid in healed_targets:
             if uid in game.players and game.players[uid].role != "Путана":
                 game.players[uid].infected = False
 
-        # Разбор атак
+        # 18. Разбор атак
         for source_name, target_uid in attacks:
             target = game.players[target_uid]
+
             if not target.alive:
                 continue
+
             if target.user_id in protected:
+                if target.user_id in healed_targets:
+                    successful_heals.add(target.user_id)
+
                 continue
+
             if target.role == "Ведьма" and target.witch_barrier:
                 target.witch_barrier = False
-                dms.append((target.user_id, "🪄 Магический барьер сработал и исчез."))
+                dms.append((
+                    target.user_id,
+                    "🪄 Магический барьер сработал и исчез."
+                ))
                 continue
+
             attacked_map.setdefault(target_uid, []).append(source_name)
+
+        # 19. Если атаковали Куртизанку, клиент находится у неё
+        for courtesan_uid, client_uid in courtesan_to_client.items():
+            if courtesan_uid not in attacked_map:
+                continue
+
+            client = game.players.get(client_uid)
+            courtesan = game.players.get(courtesan_uid)
+
+            if not client or not courtesan or not client.alive:
+                continue
+
+            attacked_map.setdefault(client_uid, []).append(
+                f"атака на дом Куртизанки ({self.player_label(courtesan)})"
+            )
+
+            dms.append((
+                client_uid,
+                "💃 Вы были у Куртизанки, когда на неё напали."
+            ))
+
+        # 20. Публичные смерти
+        if successful_heals:
+            public_lines.append("🩺 Доктор провёл удачную операцию.")
 
         if not attacked_map:
             public_lines.append("🌙 Ночь прошла без смертей.")
         else:
-            for target_uid in sorted(attacked_map.keys(), key=lambda uid: game.players[uid].seat):
-                self._kill_player(game, target_uid, public_lines, "Ночью погиб(ла)")
+            for target_uid in sorted(
+                    attacked_map.keys(),
+                    key=lambda uid: game.players[uid].seat
+            ):
+                self._kill_player(
+                    game,
+                    target_uid,
+                    public_lines,
+                    "Ночью погиб(ла)"
+                )
 
-        # Бомж
+        # 21. Бомж получает результат
         for watcher_uid, watched_uid in bum_watchers:
             if watched_uid in attacked_map:
                 killers = ", ".join(attacked_map[watched_uid])
-                dms.append((watcher_uid, f"🧥 Вашу цель убили. Убийца(ы): {killers}"))
+                dms.append((
+                    watcher_uid,
+                    f"🧥 Вашу цель убили. Убийца(ы): {killers}"
+                ))
                 bum_saw_killer = True
             else:
                 dms.append((watcher_uid, "🧥 Игрок жив."))
@@ -1842,6 +2483,7 @@ class Engine:
             public_lines.append("🧥 Этой ночью Бомж видел убийцу.")
 
         winner = self._check_winner(game)
+
         if winner:
             public_lines.append(f"🏆 {winner}")
             game.phase = "ENDED"
