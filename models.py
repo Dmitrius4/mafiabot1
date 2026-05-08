@@ -262,6 +262,9 @@ class Game:
 
     lovers: Dict[int, int] = field(default_factory=dict)
 
+    police_verified_town_uids: List[int] = field(default_factory=list)
+    police_station_uids: List[int] = field(default_factory=list)
+
     judge_candidates: List[int] = field(default_factory=list)
     judge_decider_uid: Optional[int] = None
     last_dead_town_uid: Optional[int] = None
