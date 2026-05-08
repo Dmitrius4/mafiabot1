@@ -203,6 +203,9 @@ class Player:
     role: Optional[str] = None
     alive: bool = True
 
+    left: bool = False
+    left_reason: Optional[str] = None
+
     # Стрелок
     bullets: int = 0
     last_shot_day: int = 0
