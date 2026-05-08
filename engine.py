@@ -294,7 +294,7 @@ class Engine:
 
         return "Для вашей роли специальные команды пока не указаны."
 
-        def action_help(self, user_id: int) -> EngineResponse:
+    def action_help(self, user_id: int) -> EngineResponse:
         game = self._find_user_game(user_id)
 
         if not game:
@@ -467,7 +467,7 @@ class Engine:
 
         return None
 
-       def _role_cards(self, game: Game) -> List[Tuple[int, str]]:
+    def _role_cards(self, game: Game) -> List[Tuple[int, str]]:
         dms: List[Tuple[int, str]] = []
 
         for p in game.players.values():
@@ -1284,7 +1284,7 @@ class Engine:
             return p
 
         try:
-                        if role == "Шериф":
+            if role == "Шериф":
                 if len(parts) == 2 and parts[1] == "guard_station":
                     game.actions[user_id] = {"verb": "guard_station", "targets": []}
 
