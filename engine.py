@@ -113,7 +113,7 @@ class Engine:
             if team_of(lover.role or "") == "town":
                 game.last_dead_town_uid = lover_uid
 
-        def _roles_composition_text(self, game: Game) -> str:
+    def _roles_composition_text(self, game: Game) -> str:
         if game.phase == "LOBBY":
             count = len(game.players)
 
@@ -294,7 +294,7 @@ class Engine:
 
         return "Для вашей роли специальные команды пока не указаны."
 
-    def action_help(self, user_id: int) -> EngineResponse:
+        def action_help(self, user_id: int) -> EngineResponse:
         game = self._find_user_game(user_id)
 
         if not game:
@@ -311,7 +311,7 @@ class Engine:
             )
         )
 
-        def _action_public_notice(self, game: Game, player: Player, payload: dict) -> str:
+    def _action_public_notice(self, game: Game, player: Player, payload: dict) -> str:
         role = self.effective_role(game, player)
         verb = payload.get("verb")
 
@@ -467,47 +467,62 @@ class Engine:
 
         return None
 
-    def _role_cards(self, game: Game) -> List[Tuple[int, str]]:
+       def _role_cards(self, game: Game) -> List[Tuple[int, str]]:
         dms: List[Tuple[int, str]] = []
 
         for p in game.players.values():
             extra = []
+
             if p.role == "Стрелок":
                 extra.append("Пули: 3")
+
             if p.role == "Ветеран":
                 extra.append("Защиты: 3")
+
             if p.role == "Ведьма":
                 extra.append("Магический барьер: 1")
+
             txt = f"🎭 Ваша роль: <b>{p.role}</b>\nМесто: <b>#{p.seat}</b>"
 
-if extra:
-    txt += "\n" + "\n".join(extra)
+            if extra:
+                txt += "\n" + "\n".join(extra)
 
-txt += "\n\n" + self._role_commands_text(p.role or "")
+            txt += "\n\n" + self._role_commands_text(p.role or "")
 
-dms.append((p.user_id, txt))
+            dms.append((p.user_id, txt))
 
         mafia = [p for p in game.players.values() if p.role in MAFIA_ROLES]
         yakuza = [p for p in game.players.values() if p.role in YAKUZA_ROLES]
         police = [p for p in game.players.values() if p.role in {"Шериф", "Сержант"}]
 
         if len(mafia) > 1:
-            members = "\n".join(f"{self.player_label(p)} — {p.role}" for p in sorted(mafia, key=lambda x: x.seat))
+            members = "\n".join(
+                f"{self.player_label(p)} — {p.role}"
+                for p in sorted(mafia, key=lambda x: x.seat)
+            )
+
             for p in mafia:
                 dms.append((p.user_id, f"🤝 Ваша фракция:\n{members}"))
 
         if len(yakuza) > 1:
-            members = "\n".join(f"{self.player_label(p)} — {p.role}" for p in sorted(yakuza, key=lambda x: x.seat))
+            members = "\n".join(
+                f"{self.player_label(p)} — {p.role}"
+                for p in sorted(yakuza, key=lambda x: x.seat)
+            )
+
             for p in yakuza:
                 dms.append((p.user_id, f"🤝 Ваша фракция:\n{members}"))
 
         if len(police) > 1:
-            members = "\n".join(f"{self.player_label(p)} — {p.role}" for p in sorted(police, key=lambda x: x.seat))
+            members = "\n".join(
+                f"{self.player_label(p)} — {p.role}"
+                for p in sorted(police, key=lambda x: x.seat)
+            )
+
             for p in police:
                 dms.append((p.user_id, f"👮 Полицейская связка:\n{members}"))
 
         return dms
-
     # -------------------------
     # Команды
     # -------------------------
@@ -560,10 +575,12 @@ dms.append((p.user_id, txt))
 
     def leave_game(self, chat_id: int, user_id: int) -> EngineResponse:
         game = self.storage.load_game(chat_id)
+
         if not game or game.phase != "LOBBY":
             return EngineResponse(ok=False, reply="Выйти можно только из лобби.")
 
         player = game.players.pop(user_id, None)
+
         if not player:
             return EngineResponse(ok=False, reply="Вас нет в лобби.")
 
@@ -575,7 +592,7 @@ dms.append((p.user_id, txt))
             broadcasts=[(chat_id, f"➖ {self.player_label(player)} вышел(ла) из лобби.")]
         )
 
-        def players_list(self, chat_id: int) -> EngineResponse:
+    def players_list(self, chat_id: int) -> EngineResponse:
         game = self.storage.load_game(chat_id)
 
         if not game:
@@ -1037,8 +1054,8 @@ dms.append((p.user_id, txt))
                 dms.append((
                     judge.user_id,
                     f"⚖️ Решение по {self.player_label(cand)}:\n"
-                    f"/judge pardon\nили\n"
-                    f"/judge {cand.seat}"
+                    f"/помиловать\nили\n"
+                    f"/казнить {cand.seat}"
                 ))
                 lines.append("\nОжидаем решение Судьи.")
                 return lines, dms
@@ -1063,7 +1080,7 @@ dms.append((p.user_id, txt))
             seats = ", ".join(f"#{game.players[uid].seat}" for uid in candidates)
             dms.append((
                 judge.user_id,
-                f"⚖️ Ничья.\nКандидаты: {seats}\n/judge pardon\nили\n/judge N"
+                f"⚖️ Ничья.\nКандидаты: {seats}\n/помиловать\nили\n/казнить N"
             ))
             lines.append("Ожидаем решение Судьи.")
             return lines, dms
@@ -1076,7 +1093,7 @@ dms.append((p.user_id, txt))
             seats = ", ".join(f"#{game.players[uid].seat}" for uid in candidates)
             dms.append((
                 decider.user_id,
-                f"⚖️ Вы получили решающий голос.\nКандидаты: {seats}\n/judge pardon\nили\n/judge N"
+                f"⚖️ Вы получили решающий голос.\nКандидаты: {seats}\n/помиловать\nили\n/казнить N"
             ))
             lines.append("Ожидаем решающий голос последнего убитого мирного.")
             return lines, dms
@@ -1096,7 +1113,7 @@ dms.append((p.user_id, txt))
 
         parts = raw_text.split()
         if len(parts) != 2:
-            return EngineResponse(ok=False, reply="Использование: /judge pardon или /judge N")
+            return EngineResponse(ok=False, reply="Использование: /помиловать или /казнить N")
 
         lines: List[str] = []
 
@@ -1110,7 +1127,7 @@ dms.append((p.user_id, txt))
             )
 
         if not parts[1].isdigit():
-            return EngineResponse(ok=False, reply="Нужно указать номер места или pardon.")
+            return EngineResponse(ok=False, reply="Нужно указать номер места или использовать /помиловать.")
 
         seat = int(parts[1])
         target = self.seat_to_player(game, seat)
@@ -1267,14 +1284,21 @@ dms.append((p.user_id, txt))
             return p
 
         try:
-            if role == "Шериф":
-                if len(parts) != 3 or parts[1] not in {"inspect", "kill"} or not parts[2].isdigit():
-                    raise ValueError("Использование: /act inspect N или /act kill N")
-                seat = int(parts[2])
-                target = target_alive(seat)
-                if not target or target.user_id == player.user_id:
-                    raise ValueError("Некорректная цель.")
-                game.actions[user_id] = {"verb": parts[1], "targets": [seat]}
+                        if role == "Шериф":
+                if len(parts) == 2 and parts[1] == "guard_station":
+                    game.actions[user_id] = {"verb": "guard_station", "targets": []}
+
+                elif len(parts) == 3 and parts[1] in {"inspect", "kill"} and parts[2].isdigit():
+                    seat = int(parts[2])
+                    target = target_alive(seat)
+
+                    if not target or target.user_id == player.user_id:
+                        raise ValueError("Некорректная цель.")
+
+                    game.actions[user_id] = {"verb": parts[1], "targets": [seat]}
+
+                else:
+                    raise ValueError("Использование: /act inspect N, /act kill N или /act guard_station")
 
             elif role == "Доктор":
                 if len(parts) != 2 or not parts[1].isdigit():
@@ -1416,20 +1440,20 @@ dms.append((p.user_id, txt))
             return EngineResponse(ok=False, reply=str(exc))
 
         payload = game.actions.get(user_id, {})
-self.storage.save_game(game)
+        self.storage.save_game(game)
 
-confirmation = self._action_private_confirmation(game, player, payload)
-notice = self._action_public_notice(game, player, payload)
+        confirmation = self._action_private_confirmation(game, player, payload)
+        notice = self._action_public_notice(game, player, payload)
 
-broadcasts = []
+        broadcasts = []
 
-if notice:
-    broadcasts.append((game.chat_id, notice))
+        if notice:
+            broadcasts.append((game.chat_id, notice))
 
-return EngineResponse(
-    reply=confirmation,
-    broadcasts=broadcasts,
-)
+        return EngineResponse(
+            reply=confirmation,
+            broadcasts=broadcasts,
+        )
 
     # -------------------------
     # Ночной резолвер
