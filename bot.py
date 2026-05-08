@@ -15,11 +15,12 @@ def is_group(message) -> bool:
     return message.chat.type in ("group", "supergroup")
 
 
-def safe_send_dm(user_id: int, text: str) -> None:
+def safe_send_dm(user_id: int, text: str) -> bool:
     try:
         bot.send_message(user_id, text)
+        return True
     except Exception:
-        pass
+        return False
 
 
 def apply_response(message, response: EngineResponse) -> None:
@@ -59,6 +60,22 @@ def reply_usage(message, usage: str) -> None:
         message,
         f"Неверный формат команды.\n\nИспользование:\n{usage}"
     )
+
+def send_private_host_info(message, response: EngineResponse) -> None:
+    if not response.ok:
+        apply_response(message, response)
+        return
+
+    sent = safe_send_dm(message.from_user.id, response.reply)
+
+    if sent:
+        bot.reply_to(message, "📩 Информация отправлена вам в личку.")
+    else:
+        bot.reply_to(
+            message,
+            "Не смог отправить информацию в личку.\n"
+            "Сначала напишите боту в личку: /start"
+        )
 
 
 def run_named_night_action(message, pseudo_text: str, allowed_roles: set, usage: str) -> None:
@@ -241,7 +258,8 @@ def cmd_actions(message):
         chat_id=message.chat.id,
         user_id=message.from_user.id,
     )
-    apply_response(message, response)
+
+    send_private_host_info(message, response)
 
 
 @bot.message_handler(commands=["remind"])
@@ -369,6 +387,28 @@ def cmd_group_russian(message):
         apply_response(message, response)
         return
 
+    if cmd == "/ход":
+        bot.reply_to(
+            message,
+            "Команда /ход работает только в личке бота.\n"
+            "Напишите боту: /ход"
+        )
+        return
+
+    if cmd == "/участок_чат":
+        bot.reply_to(
+            message,
+            "Чат полицейского участка работает только в личке бота."
+        )
+        return
+
+    if cmd == "/team":
+        bot.reply_to(
+            message,
+            "Командный чат работает только в личке бота."
+        )
+        return
+
     if cmd == "/ходы":
         if args:
             reply_usage(message, "/ходы")
@@ -378,7 +418,8 @@ def cmd_group_russian(message):
             chat_id=message.chat.id,
             user_id=message.from_user.id,
         )
-        apply_response(message, response)
+
+        send_private_host_info(message, response)
         return
 
     if cmd == "/напомнить":
@@ -407,6 +448,59 @@ def cmd_private_russian(message):
     if cmd == "/ход":
         response = engine.action_help(message.from_user.id)
         apply_response(message, response)
+        return
+
+    if cmd == "/team":
+        response = engine.team_message(message.from_user.id, message.text)
+        apply_response(message, response)
+        return
+
+    if cmd == "/участок_добавить":
+        response = engine.police_station_add(message.from_user.id, message.text)
+        apply_response(message, response)
+        return
+
+    if cmd == "/участок_чат":
+        response = engine.police_station_message(message.from_user.id, message.text)
+        apply_response(message, response)
+        return
+
+    if cmd == "/участок":
+        response = engine.police_station_list(message.from_user.id)
+        apply_response(message, response)
+        return
+
+    if cmd == "/участок_убрать":
+        response = EngineResponse(
+            ok=False,
+            reply="Команда /участок_убрать отключена. Участок теперь пополняется только проверенными мирными игроками."
+        )
+        apply_response(message, response)
+        return
+
+    if cmd == "/ходы":
+        if args:
+            reply_usage(message, "/ходы")
+            return
+
+        response = engine.host_night_actions_status(message.from_user.id)
+        apply_response(message, response)
+        return
+
+    if cmd == "/напомнить":
+        if args:
+            reply_usage(message, "/напомнить")
+            return
+
+        response = engine.host_remind_night_actions(message.from_user.id)
+        apply_response(message, response)
+        return
+
+    if cmd in {"/участок_добавить", "/участок", "/участок_убрать"}:
+        bot.reply_to(
+            message,
+            "Команды полицейского участка работают только в личке бота."
+        )
         return
 
     # Шериф / Сержант
