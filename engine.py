@@ -311,6 +311,241 @@ class Engine:
 
         return "Для вашей роли специальные команды пока не указаны."
 
+    def _remove_active_player(
+        self,
+        game: Game,
+        target: Player,
+        public_lines: List[str],
+        reason: str,
+    ) -> None:
+        target.alive = False
+        target.left = True
+        target.left_reason = reason
+
+        # Удаляем ночное действие самого игрока
+        game.actions.pop(target.user_id, None)
+
+        # Удаляем голоса игрока
+        game.votes.pop(target.user_id, None)
+
+        # Удаляем голоса против игрока
+        for voter_uid, voted_uid in list(game.votes.items()):
+            if voted_uid == target.user_id:
+                game.votes.pop(voter_uid, None)
+
+        # Удаляем из любовной пары, но НЕ убиваем второго
+        if target.user_id in game.lovers:
+            lover_uid = game.lovers.pop(target.user_id, None)
+
+            if lover_uid in game.lovers:
+                game.lovers.pop(lover_uid, None)
+
+        # Удаляем из полицейского участка
+        if hasattr(game, "police_station_uids"):
+            if target.user_id in game.police_station_uids:
+                game.police_station_uids.remove(target.user_id)
+
+        if hasattr(game, "police_verified_town_uids"):
+            if target.user_id in game.police_verified_town_uids:
+                game.police_verified_town_uids.remove(target.user_id)
+
+        # Если есть поля судьи — чистим
+        if hasattr(game, "judge_candidates"):
+            if target.user_id in game.judge_candidates:
+                game.judge_candidates.remove(target.user_id)
+
+        if hasattr(game, "judge_decider_uid"):
+            if game.judge_decider_uid == target.user_id:
+                game.judge_decider_uid = None
+
+        if hasattr(game, "last_dead_town_uid"):
+            if game.last_dead_town_uid == target.user_id:
+                game.last_dead_town_uid = None
+
+        public_lines.append(f"{reason} {self.player_label(target)} выбыл(а) из игры.")
+
+    def leave_game(self, user_id: int) -> EngineResponse:
+        game = self._find_user_game(user_id)
+
+        if not game:
+            return EngineResponse(ok=False, reply="Вы не в игре.")
+
+        player = game.players.get(user_id)
+
+        if not player:
+            return EngineResponse(ok=False, reply="Вы не в игре.")
+
+        # Если игра ещё не началась — просто удаляем из лобби
+        if game.phase == "LOBBY":
+            seat = player.seat
+            name = self.player_label(player)
+
+            game.players.pop(user_id, None)
+
+            for s, uid in list(game.seat_to_uid.items()):
+                if uid == user_id:
+                    game.seat_to_uid.pop(s, None)
+
+            # Пересадка игроков в лобби
+            sorted_players = sorted(game.players.values(), key=lambda p: p.seat)
+            game.seat_to_uid.clear()
+
+            for index, p in enumerate(sorted_players, start=1):
+                p.seat = index
+                game.seat_to_uid[index] = p.user_id
+
+            self.storage.save_game(game)
+
+            return EngineResponse(
+                reply=f"🚪 {name} вышел(ла) из лобби."
+            )
+
+        if game.phase == "ENDED":
+            return EngineResponse(ok=False, reply="Игра уже завершена.")
+
+        if not player.alive:
+            return EngineResponse(ok=False, reply="Вы уже не участвуете в игре.")
+
+        public_lines: List[str] = [
+            f"🚪 {self.player_label(player)} покинул(а) игру."
+        ]
+
+        player.alive = False
+        player.left = True
+        player.left_reason = "left"
+
+        self._cleanup_removed_player(game, player)
+
+        win = self._check_win(game)
+
+        if win:
+            public_lines.append(win)
+            game.phase = "ENDED"
+
+        self.storage.save_game(game)
+
+        return EngineResponse(
+            reply="Вы вышли из игры.",
+            public="\n".join(public_lines),
+        )
+
+    def _cleanup_removed_player(self, game: Game, player: Player) -> None:
+        uid = player.user_id
+
+        # Его ночное действие
+        game.actions.pop(uid, None)
+
+        # Его голос
+        game.votes.pop(uid, None)
+
+        # Голоса против него
+        for voter_uid, target_uid in list(game.votes.items()):
+            if target_uid == uid:
+                game.votes.pop(voter_uid, None)
+
+        # Любовная связь удаляется без смерти второго игрока
+        if uid in game.lovers:
+            lover_uid = game.lovers.pop(uid, None)
+
+            if lover_uid in game.lovers:
+                game.lovers.pop(lover_uid, None)
+
+        # Полицейский участок
+        if hasattr(game, "police_station_uids") and uid in game.police_station_uids:
+            game.police_station_uids.remove(uid)
+
+        if hasattr(game, "police_verified_town_uids") and uid in game.police_verified_town_uids:
+            game.police_verified_town_uids.remove(uid)
+
+        # Действия других игроков в выбывшего
+        for actor_uid, action in list(game.actions.items()):
+            if not isinstance(action, dict):
+                continue
+
+            target_uid = action.get("target_uid")
+
+            if target_uid == uid:
+                game.actions.pop(actor_uid, None)
+
+    def kick_player(self, chat_id: int, user_id: int, raw_text: str) -> EngineResponse:
+        game = self.storage.load_game(chat_id)
+
+        if not game:
+            return EngineResponse(ok=False, reply="Игры в этом чате нет.")
+
+        if game.host_id != user_id:
+            return EngineResponse(ok=False, reply="Только ведущий может исключать игроков.")
+
+        parts = raw_text.split()
+
+        if len(parts) != 2 or not parts[1].isdigit():
+            return EngineResponse(ok=False, reply="Использование: /исключить N")
+
+        target = self.seat_to_player(game, int(parts[1]))
+
+        if not target:
+            return EngineResponse(ok=False, reply="Игрок с таким номером не найден.")
+
+        if target.user_id == game.host_id:
+            return EngineResponse(ok=False, reply="Ведущего нельзя исключить из игры этой командой.")
+
+        # Если игра ещё в лобби — просто удалить
+        if game.phase == "LOBBY":
+            label = self.player_label(target)
+
+            game.players.pop(target.user_id, None)
+
+            for s, uid in list(game.seat_to_uid.items()):
+                if uid == target.user_id:
+                    game.seat_to_uid.pop(s, None)
+
+            sorted_players = sorted(game.players.values(), key=lambda p: p.seat)
+            game.seat_to_uid.clear()
+
+            for index, p in enumerate(sorted_players, start=1):
+                p.seat = index
+                game.seat_to_uid[index] = p.user_id
+
+            self.storage.save_game(game)
+
+            return EngineResponse(
+                reply=f"🚫 {label} исключён(а) из лобби."
+            )
+
+        if game.phase == "ENDED":
+            return EngineResponse(ok=False, reply="Игра уже завершена.")
+
+        if not target.alive:
+            return EngineResponse(ok=False, reply="Этот игрок уже не участвует в игре.")
+
+        public_lines: List[str] = [
+            f"🚫 {self.player_label(target)} исключён(а) ведущим."
+        ]
+
+        target.alive = False
+        target.left = True
+        target.left_reason = "kicked"
+
+        self._cleanup_removed_player(game, target)
+
+        win = self._check_win(game)
+
+        if win:
+            public_lines.append(win)
+            game.phase = "ENDED"
+
+        self.storage.save_game(game)
+
+        return EngineResponse(
+            reply="\n".join(public_lines),
+            dms=[
+                (
+                    target.user_id,
+                    "🚫 Вы были исключены из игры ведущим."
+                )
+            ],
+        )
+
     def action_help(self, user_id: int) -> EngineResponse:
         game = self._find_user_game(user_id)
 
